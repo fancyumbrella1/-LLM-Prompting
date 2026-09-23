@@ -1,70 +1,100 @@
-## Import the necessary modules
+"""Find possible lost-item matches with Qwen and validate its JSON output."""
 
-## Import the function from the module parse_data
+import json
+import os
+from pathlib import Path
 
+from parse_data import get_unclaimed_items, load_items, save_result
 
-## Build your prompt based on the description the user provides 
-## and the items that are available in the lost-and-found database.
-## The model must follow the rules listed in the README file
-## The function should return the system prompt and the user prompt.
-## You may need to use json.dumps() to convert the available_items list into a JSON string.
 
 def build_prompt(description, available_items):
-    pass
-    
+    system_prompt = (
+        "You are a campus lost-and-found matching assistant. Use ONLY the "
+        "provided JSON items as evidence. Include every plausible match; not "
+        "all item details need to match, but the item type must be compatible. "
+        "A shared color or location alone is not enough. Do not invent IDs. Return ONLY one "
+        'valid JSON object with exactly two keys: {"matches": ["ITEM_ID"], '
+        '"confidence": "LOW"}. matches must be a list of matching IDs, or [] '
+        "if none match. confidence must be exactly LOW, MEDIUM, or HIGH. "
+        "Do not add markdown or explanations."
+    )
+    user_prompt = (
+        f"Lost item description:\n{description.strip()}\n\n"
+        "Available unclaimed items (the only source you may use):\n"
+        f"{json.dumps(available_items, ensure_ascii=False)}"
+    )
+    return system_prompt, user_prompt
 
-## Logic to ask Qwen for all the possible matches based on the system prompt and user prompt.
-## The function should return the response from Qwen.
+
 def ask_qwen(system_prompt, user_prompt):
-    pass
+    from ollama import chat
+
+    return chat(
+        model=os.environ.get("OLLAMA_MODEL", "qwen3:8b"),
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        format="json",
+    )
 
 
-## Logic to parse the response from Qwen and return the result. 
-## You may need to use json.loads() to convert the response string into a suitable Python data structure.
 def parse_response(response_text):
-    pass
-    
+    return json.loads(response_text)
 
 
-## Logic to validate the result returned by Qwen.
-## It should check if the result is a dictionary, contains the keys "matches" and "confidence", and that the values are of the correct type.
-## If everything is correct, then it should check if the item IDs in the "matches" list are valid IDs .
 def validate_result(result, available_items):
-    pass
+    if not isinstance(result, dict) or set(result) != {"matches", "confidence"}:
+        raise ValueError("Qwen must return exactly matches and confidence.")
+    matches = result["matches"]
+    if not isinstance(matches, list) or not all(isinstance(item, str) for item in matches):
+        raise ValueError("matches must be a list of item IDs.")
+    if result["confidence"] not in {"LOW", "MEDIUM", "HIGH"}:
+        raise ValueError("confidence must be LOW, MEDIUM, or HIGH.")
+    valid_ids = {item["id"] for item in available_items}
+    if any(item_id not in valid_ids for item_id in matches):
+        raise ValueError("Qwen returned an ID that is not available.")
+    if len(matches) != len(set(matches)):
+        raise ValueError("Qwen returned a duplicate ID.")
+    return result
 
 
-## Logic to display the matches found by Qwen in a user-friendly format.
-## It should look something like this:
-""" 
-CAMPUS LOST-AND-FOUND ASSISTANT
-==================================================
-
-Describe the item you lost: I lost a black bag somewhere
-
-Searching for possible matches...
-
-MATCH RESULT
---------------------------------------------------
-Confidence: MEDIUM
-
-Possible matches:
-
-ID: F101
-Item: backpack
-Color: black
-Location: Library 2nd floor
-Date found: 2026-09-15
-
-Result saved to output/match_result.json
- """
-## If no matches are found, it should display a message indicating that no matches were found, along with the empty list
 def display_matches(result, available_items):
-    pass
-    
+    print("\nMATCH RESULT")
+    print("-" * 50)
+    print(f'Confidence: {result["confidence"]}')
+    if not result["matches"]:
+        print("No possible matches found.")
+        print("Matches: []")
+        return
+    by_id = {item["id"]: item for item in available_items}
+    print("\nPossible matches:")
+    for item_id in result["matches"]:
+        item = by_id[item_id]
+        print(f'\nID: {item_id}')
+        print(f'Item: {item["item"]}')
+        print(f'Color: {item["color"]}')
+        print(f'Location: {item["location"]}')
+        print(f'Date found: {item["date"]}')
 
-## Control center for the entire program.
+
 def main():
-    pass
+    root = Path(__file__).parent
+    available_items = get_unclaimed_items(load_items(root / "found_items.json"))
+    print("CAMPUS LOST-AND-FOUND ASSISTANT")
+    print("=" * 50)
+    description = input("Describe the item you lost: ").strip()
+    if not description:
+        print("Please provide a description.")
+        return
+    print("\nSearching for possible matches...")
+    system_prompt, user_prompt = build_prompt(description, available_items)
+    response = ask_qwen(system_prompt, user_prompt)
+    result = validate_result(parse_response(response.message.content), available_items)
+    display_matches(result, available_items)
+    output = root / "output" / "match_result.json"
+    save_result(result, output)
+    print(f"\nResult saved to {output}")
 
 
 if __name__ == "__main__":
